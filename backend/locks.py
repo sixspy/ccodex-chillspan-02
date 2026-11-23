@@ -17,21 +17,22 @@ class LockIn(BaseModel):
 
 def try_acquire(conn, lock_key: str, holder: str) -> bool:
     now = now_iso()
+    cur = conn.execute(
+        """INSERT OR IGNORE INTO chamber_locks(lock_key,holder,acquired_at)
+           VALUES (?,?,?)""",
+        (lock_key, holder, now),
+    )
+    if cur.rowcount == 1:
+        return True
     row = conn.execute(
         "SELECT holder FROM chamber_locks WHERE lock_key=?", (lock_key,)
     ).fetchone()
-    if row is None:
-        conn.execute(
-            "INSERT INTO chamber_locks(lock_key,holder,acquired_at) VALUES (?,?,?)",
-            (lock_key, holder, now),
-        )
-        return True
-    if row["holder"] == holder:
+    if row is not None and row["holder"] == holder:
         return True
     conn.execute(
         """INSERT INTO contention_log(lock_key,actor,action,detail,created_at)
            VALUES (?,?,?,?,?)""",
-        (lock_key, holder, "争用", f"持有者={row['holder']}", now),
+        (lock_key, holder, "争用", f"持有者={row['holder'] if row else '?'}", now),
     )
     return False
 
@@ -45,6 +46,9 @@ def release(conn, lock_key: str, holder: str) -> None:
 
 def require_lock(conn, lock_key: str, holder: str) -> None:
     if not try_acquire(conn, lock_key, holder):
+        # 争用痕须先于异常落库：后到只记争用，不写业务。
+        # 各调用点均在连接开启后首先取锁，此前无业务写入，提交安全。
+        conn.commit()
         raise HTTPException(409, "争用：后到只记争用，不写业务")
 
 

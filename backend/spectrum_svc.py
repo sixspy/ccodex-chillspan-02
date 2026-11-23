@@ -1,4 +1,4 @@
-"""温谱导出。"""
+"""温谱导出：曲线只认封批快照点列，与正式表零漂移。"""
 from __future__ import annotations
 
 import hashlib
@@ -11,6 +11,23 @@ from db import connect, now_iso, write_audit
 from models import SpectrumIn
 
 router = APIRouter(tags=["spectrum"])
+
+
+def _latest_sealed_points(conn, batch_id: int) -> list | None:
+    snap = conn.execute(
+        """SELECT manifest FROM seal_snapshots WHERE batch_id=?
+           ORDER BY batch_generation DESC, id DESC LIMIT 1""",
+        (batch_id,),
+    ).fetchone()
+    if not snap:
+        return None
+    try:
+        manifest = json.loads(snap["manifest"])
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    return manifest.get("points")
 
 
 @router.get("/api/spectrum")
@@ -35,7 +52,9 @@ def export_spectrum(body: SpectrumIn, authorization: AuthHeader = None):
             raise HTTPException(404, "批次不存在")
         if batch["status"] != "已封批":
             raise HTTPException(409, "须先封批再导出温谱")
-        points = json.loads(batch["temp_points"] or "[]")
+        points = _latest_sealed_points(conn, body.batch_id)
+        if points is None:
+            raise HTTPException(409, "封批快照缺失，禁止导出温谱")
         payload = json.dumps(
             {
                 "batch_code": batch["batch_code"],
@@ -80,12 +99,13 @@ def get_export(export_ref: str, authorization: AuthHeader = None):
     require_user(authorization)
     with connect() as conn:
         row = conn.execute(
-            """SELECT s.*, b.temp_points, b.batch_code FROM spectrum_exports s
+            """SELECT s.*, b.batch_code FROM spectrum_exports s
                JOIN temp_batches b ON b.id=s.batch_id WHERE s.export_ref=?""",
             (export_ref,),
         ).fetchone()
         if not row:
             raise HTTPException(404, "导出不存在")
         data = dict(row)
-        data["temp_points"] = json.loads(data["temp_points"] or "[]")
+        points = _latest_sealed_points(conn, row["batch_id"])
+        data["temp_points"] = points if points is not None else []
         return data

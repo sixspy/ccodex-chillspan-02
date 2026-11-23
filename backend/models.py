@@ -28,6 +28,11 @@ class BatchIn(BaseModel):
     temp_points: list[dict] = Field(default_factory=list)
 
 
+class ProbeWritebackIn(BaseModel):
+    batch_id: int
+    points: list[dict] = Field(min_length=1)
+
+
 class ExcursionOpenIn(BaseModel):
     batch_id: int
     threshold: float | None = None

@@ -1,0 +1,30 @@
+[
+  {
+    "batch_code": "TB-CK-HD-01-002",
+    "batch_generation": 2,
+    "manifest": {
+      "batch_code": "TB-CK-HD-01-002",
+      "generation": 2,
+      "point_count": 2,
+      "min": -19.5,
+      "max": -19.3,
+      "points": [{"t": "12:00", "c": -19.5}, {"t": "13:00", "c": -19.3}]
+    },
+    "status": "已封批",
+    "sealed_at": "2026-11-10T10:00:00"
+  },
+  {
+    "batch_code": "TB-CK-HD-01-003",
+    "batch_generation": 2,
+    "manifest": {
+      "batch_code": "TB-CK-HD-01-003",
+      "generation": 2,
+      "point_count": 2,
+      "min": -20.4,
+      "max": -20.1,
+      "points": [{"t": "08:00", "c": -20.4}, {"t": "09:00", "c": -20.1}]
+    },
+    "status": "已封批",
+    "sealed_at": "2026-11-15T09:00:00"
+  }
+]

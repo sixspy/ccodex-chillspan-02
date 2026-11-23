@@ -38,6 +38,8 @@ export function createApi(getToken, onUnauthorized) {
       req(chamberId ? `/api/probes?chamber_id=${chamberId}` : "/api/probes"),
     probe: (id) => req(`/api/probes/${id}`),
     registerProbe: (data) => req("/api/probes", { method: "POST", body: JSON.stringify(data) }),
+    probeWriteback: (probeId, data) =>
+      req(`/api/probes/${probeId}/writeback`, { method: "POST", body: JSON.stringify(data) }),
     batches: (status) =>
       req(status ? `/api/batches?status=${encodeURIComponent(status)}` : "/api/batches"),
     batch: (id) => req(`/api/batches/${id}`),
@@ -50,6 +52,8 @@ export function createApi(getToken, onUnauthorized) {
       req("/api/excursions/close", { method: "POST", body: JSON.stringify(data) }),
     seals: () => req("/api/seals"),
     seal: (data) => req("/api/seals", { method: "POST", body: JSON.stringify(data) }),
+    sealMemos: () => req("/api/seal-memos"),
+    sealDeviations: () => req("/api/seal-deviations"),
     spectrumList: () => req("/api/spectrum"),
     spectrumExport: (data) =>
       req("/api/spectrum/export", { method: "POST", body: JSON.stringify(data) }),

@@ -1,4 +1,4 @@
-"""温控批次入库：温度点序列 JSON。"""
+"""温控批次入库：温度点序列 JSON；已封批点列完整性比对。"""
 from __future__ import annotations
 
 import json
@@ -6,12 +6,34 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from auth import AuthHeader, require_user, require_writer
-from db import connect, now_iso, write_audit
+from db import connect, now_iso, points_sha256, write_audit
 from locks import release, require_lock
 from models import BatchIn
 from validators import summarize_points, validate_probe_online, validate_temp_point
 
 router = APIRouter(tags=["batches"])
+
+
+def _point_integrity(conn, batch) -> str:
+    """已封批批次正式点列 vs 最新封批快照：一致 / 偏航 / 快照缺失。"""
+    if batch["status"] != "已封批":
+        return "未封批"
+    snap = conn.execute(
+        """SELECT manifest FROM seal_snapshots WHERE batch_id=?
+           ORDER BY batch_generation DESC, id DESC LIMIT 1""",
+        (batch["id"],),
+    ).fetchone()
+    if not snap:
+        return "快照缺失"
+    try:
+        manifest = json.loads(snap["manifest"])
+    except (TypeError, ValueError):
+        return "快照缺失"
+    sha = manifest.get("points_sha") if isinstance(manifest, dict) else None
+    if not sha:
+        return "快照缺失"
+    current = json.loads(batch["temp_points"] or "[]")
+    return "一致" if points_sha256(current) == sha else "偏航"
 
 
 def _next_batch_code(conn, chamber_id: int) -> str:
@@ -49,6 +71,7 @@ def list_batches(authorization: AuthHeader = None, status: str | None = None):
         for r in rows:
             d = dict(r)
             d["temp_points"] = json.loads(d["temp_points"] or "[]")
+            d["point_integrity"] = _point_integrity(conn, r)
             items.append(d)
         return {"items": items}
 
@@ -68,6 +91,7 @@ def get_batch(batch_id: int, authorization: AuthHeader = None):
             raise HTTPException(404, "批次不存在")
         data = dict(row)
         data["temp_points"] = json.loads(data["temp_points"] or "[]")
+        data["point_integrity"] = _point_integrity(conn, row)
         exc = conn.execute(
             "SELECT * FROM excursion_cursors WHERE batch_id=? ORDER BY id DESC",
             (batch_id,),
@@ -76,10 +100,15 @@ def get_batch(batch_id: int, authorization: AuthHeader = None):
             "SELECT * FROM seal_snapshots WHERE batch_id=? ORDER BY id DESC",
             (batch_id,),
         ).fetchall()
+        devs = conn.execute(
+            "SELECT * FROM temp_point_deviations WHERE batch_id=? ORDER BY id DESC",
+            (batch_id,),
+        ).fetchall()
         return {
             "batch": data,
             "excursions": [dict(e) for e in exc],
             "seals": [dict(s) for s in seals],
+            "deviations": [dict(x) for x in devs],
         }
 
 

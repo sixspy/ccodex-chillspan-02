@@ -42,6 +42,8 @@ createApp({
     const batches = ref([]);
     const excursions = ref([]);
     const seals = ref([]);
+    const sealMemos = ref([]);
+    const sealDeviations = ref([]);
     const spectrumExports = ref([]);
     const lineageEdges = ref([]);
     const calibrations = ref([]);
@@ -83,6 +85,11 @@ createApp({
     });
     const excOpenForm = ref({ batch_id: 0, threshold: null, note: "" });
     const sealForm = ref({ batch_id: 0, manifest: "" });
+    const writebackForm = ref({
+      probe_id: 0,
+      batch_id: 0,
+      points_json: '[{"t":"16:00","c":-19.0}]',
+    });
     const spectrumForm = ref({ batch_id: 0 });
     const lineageForm = ref({
       from_batch_id: 1,
@@ -129,6 +136,9 @@ createApp({
     );
     const sealedBatches = computed(() =>
       batches.value.filter((b) => b.status === "已封批")
+    );
+    const writebackBatches = computed(() =>
+      batches.value.filter((b) => b.probe_id === writebackForm.value.probe_id)
     );
 
     function fmtTemp(n) {
@@ -192,7 +202,7 @@ createApp({
       if (!token.value) return;
       clearFlash();
       try {
-        const [ch, pr, bt, ex, sl, sp, lg, cal, rt, d, cj, tj] = await Promise.all([
+        const [ch, pr, bt, ex, sl, sp, lg, cal, rt, d, cj, tj, sm, sd] = await Promise.all([
           api.chambers(),
           api.probes(),
           api.batches(),
@@ -205,6 +215,8 @@ createApp({
           api.dashboard(),
           api.carrierJobs(),
           api.thawJobs(),
+          api.sealMemos(),
+          api.sealDeviations(),
         ]);
         chambers.value = ch.items || [];
         probes.value = pr.items || [];
@@ -218,6 +230,8 @@ createApp({
         dash.value = d || {};
         carrierJobs.value = cj.items || [];
         thawJobs.value = tj.items || [];
+        sealMemos.value = sm.items || [];
+        sealDeviations.value = sd.items || [];
 
         if (chambers.value.length && !probeForm.value.chamber_id) {
           probeForm.value.chamber_id = chambers.value[0].id;
@@ -239,6 +253,12 @@ createApp({
         }
         if (probes.value.length) {
           calForm.value.probe_id = probes.value[0].id;
+          if (!writebackForm.value.probe_id) {
+            writebackForm.value.probe_id = probes.value[0].id;
+          }
+        }
+        if (writebackBatches.value.length && !writebackForm.value.batch_id) {
+          writebackForm.value.batch_id = writebackBatches.value[0].id;
         }
       } catch (e) {
         flashErr(e);
@@ -251,6 +271,14 @@ createApp({
         if (batchProbes.value.length) {
           batchForm.value.probe_id = batchProbes.value[0].id;
         }
+      }
+    );
+    watch(
+      () => writebackForm.value.probe_id,
+      () => {
+        writebackForm.value.batch_id = writebackBatches.value.length
+          ? writebackBatches.value[0].id
+          : 0;
       }
     );
 
@@ -273,6 +301,23 @@ createApp({
       try {
         await api.registerProbe(probeForm.value);
         flashOk("探头已登记");
+        await refresh();
+      } catch (e) {
+        flashErr(e);
+      }
+    }
+    async function doWriteback() {
+      clearFlash();
+      try {
+        let points = [];
+        if (writebackForm.value.points_json.trim()) {
+          points = JSON.parse(writebackForm.value.points_json);
+        }
+        const row = await api.probeWriteback(writebackForm.value.probe_id, {
+          batch_id: writebackForm.value.batch_id,
+          points,
+        });
+        flashOk(`批次 ${row.batch_code} 已回写，累计 ${row.point_count} 点`);
         await refresh();
       } catch (e) {
         flashErr(e);
@@ -463,6 +508,8 @@ createApp({
       batches,
       excursions,
       seals,
+      sealMemos,
+      sealDeviations,
       spectrumExports,
       lineageEdges,
       calibrations,
@@ -484,6 +531,7 @@ createApp({
       batchForm,
       excOpenForm,
       sealForm,
+      writebackForm,
       spectrumForm,
       lineageForm,
       calForm,
@@ -494,6 +542,7 @@ createApp({
       openableBatches,
       sealableBatches,
       sealedBatches,
+      writebackBatches,
       login,
       logout,
       refresh,
@@ -506,6 +555,7 @@ createApp({
       createChamber,
       loadChamberDetail,
       registerProbe,
+      doWriteback,
       loadProbeDetail,
       selectProbe,
       createBatch,

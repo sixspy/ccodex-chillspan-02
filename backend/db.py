@@ -167,6 +167,31 @@ CREATE TABLE IF NOT EXISTS contention_log(
   detail TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS seal_point_memos(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  seal_id INTEGER NOT NULL,
+  policy_path TEXT NOT NULL,
+  decision TEXT NOT NULL,
+  points_sha TEXT NOT NULL,
+  point_count INTEGER NOT NULL,
+  shift_tag TEXT NOT NULL,
+  locked INTEGER NOT NULL DEFAULT 1,
+  decided_by TEXT NOT NULL,
+  decided_at TEXT NOT NULL,
+  FOREIGN KEY(batch_id) REFERENCES temp_batches(id),
+  FOREIGN KEY(seal_id) REFERENCES seal_snapshots(id)
+);
+CREATE TABLE IF NOT EXISTS temp_point_deviations(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NOT NULL,
+  actor TEXT NOT NULL,
+  attempted_points TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(batch_id) REFERENCES temp_batches(id)
+);
 CREATE TABLE IF NOT EXISTS audit_trail(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor TEXT NOT NULL,
@@ -202,6 +227,135 @@ def write_audit(conn: sqlite3.Connection, actor: str, action: str, target: str, 
            VALUES (?,?,?,?,?)""",
         (actor, action, target, json.dumps(payload, ensure_ascii=False), now_iso()),
     )
+
+
+def points_sha256(points: list) -> str:
+    """温度点序列规范化哈希：封批快照与正式表比对用同一口径。"""
+    import hashlib
+
+    canonical = json.dumps(points or [], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+SEAL_POINT_POLICY = "甲"
+SEAL_POINT_DECISION = (
+    "封批代已生效：探头挂接温度点正式表零改并拒写；"
+    "偏离已封纪要记温度点偏航；不采用影子草案晋升口径，两套口径不混用"
+)
+
+
+def shift_tag_for(iso_ts: str | None = None) -> str:
+    return f"{(iso_ts or now_iso())[:10]}/当班"
+
+
+def ensure_seal_memo(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    seal_id: int,
+    manifest: dict,
+    decided_by: str,
+    sealed_at: str | None,
+) -> None:
+    """裁决落锤：每个封批快照对应一份当班封死的温度点纪要（甲路径）。"""
+    if conn.execute(
+        "SELECT id FROM seal_point_memos WHERE seal_id=?", (seal_id,)
+    ).fetchone():
+        return
+    conn.execute(
+        """INSERT INTO seal_point_memos(batch_id,seal_id,policy_path,decision,
+           points_sha,point_count,shift_tag,locked,decided_by,decided_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            batch_id,
+            seal_id,
+            SEAL_POINT_POLICY,
+            SEAL_POINT_DECISION,
+            manifest.get("points_sha", ""),
+            int(manifest.get("point_count", 0)),
+            shift_tag_for(sealed_at),
+            1,
+            decided_by,
+            now_iso(),
+        ),
+    )
+
+
+def record_point_deviation(
+    conn: sqlite3.Connection,
+    batch_id: int,
+    actor: str,
+    attempted: list,
+    reason: str,
+    source: str,
+) -> None:
+    """温度点偏航登记：偏离已封纪要的点列只落偏航表，永不进正式表。"""
+    conn.execute(
+        """INSERT INTO temp_point_deviations(batch_id,actor,attempted_points,reason,
+           source,created_at) VALUES (?,?,?,?,?,?)""",
+        (
+            batch_id,
+            actor,
+            json.dumps(attempted, ensure_ascii=False),
+            reason,
+            source,
+            now_iso(),
+        ),
+    )
+
+
+def repair_sealed_point_drift(conn: sqlite3.Connection) -> None:
+    """封批后遭硬改的正式温度点：记偏航并回滚至封批快照点列（甲路径零改）。"""
+    rows = conn.execute(
+        "SELECT * FROM temp_batches WHERE status='已封批'"
+    ).fetchall()
+    for b in rows:
+        snap = conn.execute(
+            """SELECT * FROM seal_snapshots WHERE batch_id=?
+               ORDER BY batch_generation DESC, id DESC LIMIT 1""",
+            (b["id"],),
+        ).fetchone()
+        if not snap:
+            continue
+        try:
+            manifest = json.loads(snap["manifest"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(manifest, dict):
+            continue
+        sealed_points = manifest.get("points")
+        sha = manifest.get("points_sha")
+        if sealed_points is None or not sha:
+            continue
+        current = json.loads(b["temp_points"] or "[]")
+        if points_sha256(current) != sha:
+            record_point_deviation(
+                conn,
+                b["id"],
+                "系统巡检",
+                current,
+                "封批后正式温度点遭硬改，回滚至封批快照点列",
+                "迁移修复",
+            )
+            conn.execute(
+                """UPDATE temp_batches SET temp_points=?, min_observed=?,
+                   max_observed=? WHERE id=?""",
+                (
+                    json.dumps(sealed_points, ensure_ascii=False),
+                    manifest.get("min"),
+                    manifest.get("max"),
+                    b["id"],
+                ),
+            )
+            write_audit(
+                conn,
+                "系统巡检",
+                "seal_point_repair",
+                b["batch_code"],
+                {"seal_id": snap["id"], "restored_points": len(sealed_points)},
+            )
+        ensure_seal_memo(
+            conn, b["id"], snap["id"], manifest, "系统裁决", snap["sealed_at"]
+        )
 
 
 def _load_json(name: str):
@@ -376,6 +530,60 @@ def seed_routes(conn: sqlite3.Connection) -> None:
         )
 
 
+def seed_seals(conn: sqlite3.Connection) -> None:
+    for row in _load_json("seals.json"):
+        batch = conn.execute(
+            "SELECT id FROM temp_batches WHERE batch_code=?", (row["batch_code"],)
+        ).fetchone()
+        if not batch:
+            continue
+        exists = conn.execute(
+            "SELECT id FROM seal_snapshots WHERE batch_id=? AND batch_generation=?",
+            (batch["id"], int(row["batch_generation"])),
+        ).fetchone()
+        if exists:
+            continue
+        manifest = dict(row["manifest"])
+        manifest["points_sha"] = points_sha256(manifest.get("points", []))
+        conn.execute(
+            """INSERT INTO seal_snapshots(batch_id,batch_generation,manifest,status,sealed_at)
+               VALUES (?,?,?,?,?)""",
+            (
+                batch["id"],
+                int(row["batch_generation"]),
+                json.dumps(manifest, ensure_ascii=False),
+                row.get("status", "已封批"),
+                row["sealed_at"],
+            ),
+        )
+
+
+def seed_spectrum(conn: sqlite3.Connection) -> None:
+    for row in _load_json("spectrum.json"):
+        batch = conn.execute(
+            "SELECT id FROM temp_batches WHERE batch_code=?", (row["batch_code"],)
+        ).fetchone()
+        if not batch:
+            continue
+        exists = conn.execute(
+            "SELECT id FROM spectrum_exports WHERE export_ref=?", (row["export_ref"],)
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            """INSERT INTO spectrum_exports(batch_id,export_ref,point_count,checksum,
+               status,created_at) VALUES (?,?,?,?,?,?)""",
+            (
+                batch["id"],
+                row["export_ref"],
+                int(row["point_count"]),
+                row["checksum"],
+                row.get("status", "已导出"),
+                row.get("created_at", now_iso()),
+            ),
+        )
+
+
 def seed_lineage_samples(conn: sqlite3.Connection) -> None:
     batches = conn.execute(
         "SELECT id, batch_code FROM temp_batches ORDER BY id LIMIT 3"
@@ -408,7 +616,10 @@ def init_db() -> None:
         seed_excursions(conn)
         seed_calibrations(conn)
         seed_routes(conn)
+        seed_seals(conn)
+        seed_spectrum(conn)
         seed_lineage_samples(conn)
+        repair_sealed_point_drift(conn)
         conn.commit()
 
 

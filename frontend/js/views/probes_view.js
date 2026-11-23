@@ -16,6 +16,23 @@ export const probesViewTemplate = `
     <button @click="registerProbe">登记探头</button>
     <button class="secondary" @click="refresh">刷新</button>
   </div>
+  <h3>探头回写温度点</h3>
+  <p class="hint">回写挂接批次采样点；已封批批次正式点列零改，回写将被拒并记温度点偏航（甲路径）。</p>
+  <div class="form-row">
+    <div><label>探头</label>
+      <select v-model.number="writebackForm.probe_id">
+        <option v-for="p in probes" :key="p.id" :value="p.id">{{ p.probe_code }}</option>
+      </select>
+    </div>
+    <div><label>挂接批次</label>
+      <select v-model.number="writebackForm.batch_id">
+        <option v-for="b in writebackBatches" :key="b.id" :value="b.id">{{ b.batch_code }} · {{ b.status }}</option>
+      </select>
+    </div>
+  </div>
+  <label>回写温度点 JSON</label>
+  <textarea v-model="writebackForm.points_json" rows="2" placeholder="[{&quot;t&quot;:&quot;16:00&quot;,&quot;c&quot;:-19}]"></textarea>
+  <div class="actions"><button @click="doWriteback">回写温度点</button></div>
   <table class="data-table">
     <thead><tr><th>编码</th><th>仓间</th><th>区域</th><th>在线</th><th>到期</th><th></th></tr></thead>
     <tbody>

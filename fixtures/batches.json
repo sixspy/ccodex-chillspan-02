@@ -38,5 +38,17 @@
     "min_observed": -19.5,
     "max_observed": -19.3,
     "sealed_at": "2026-11-10T10:00:00"
+  },
+  {
+    "batch_code": "TB-CK-HD-01-003",
+    "chamber_code": "CK-HD-01",
+    "probe_code": "PR-HD-A1",
+    "cargo_ref": "冷链试剂 E-07",
+    "status": "已封批",
+    "generation": 2,
+    "temp_points": [{"t": "08:00", "c": -20.4}, {"t": "09:00", "c": -20.1}, {"t": "10:00", "c": -17.2}, {"t": "11:00", "c": -16.8}],
+    "min_observed": -20.4,
+    "max_observed": -16.8,
+    "sealed_at": "2026-11-15T09:00:00"
   }
 ]
